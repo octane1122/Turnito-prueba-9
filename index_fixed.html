@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>TurnitoArg ULTRA</title>
+
+<!-- Firebase Compat SDKs (sin type="module", funcionan con onclick en HTML) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+<style>
+body{background:#0f172a;color:white;font-family:sans-serif;text-align:center}
+button,input{padding:10px;margin:5px;border-radius:8px}
+button{background:#22c55e;border:none}
+.card{background:#1e293b;margin:10px;padding:10px;border-radius:10px}
+#chatBox{position:fixed;bottom:0;width:100%;background:#111}
+</style>
+</head>
+
+<body>
+
+<h1>⚽ TurnitoArg ULTRA</h1>
+
+<div id="authDiv">
+<input id="email" type="email"><br>
+<input id="pass" type="password"><br>
+<button onclick="register()">Registrarse</button>
+<button onclick="login()">Ingresar</button>
+</div>
+
+<div id="appDiv" style="display:none">
+<button onclick="logout()">Salir</button>
+
+<h2>Crear</h2>
+<input id="zona">
+<input id="fecha" type="date">
+<input id="hora" type="time">
+<button onclick="crearPartido()">Crear</button>
+
+<div id="partidos"></div>
+<div id="ranking"></div>
+</div>
+
+<div id="chatBox">
+<div id="mensajes"></div>
+<input id="msg">
+<button onclick="sendMsg()">Enviar</button>
+</div>
+
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyDIuuojNXzkSh4RR4Adwkm1uWEjUZ2aP2w",
+  authDomain: "turnitoarg-7ace7.firebaseapp.com",
+  projectId: "turnitoarg-7ace7",
+  storageBucket: "turnitoarg-7ace7.firebasestorage.app",
+  messagingSenderId: "793271454131",
+  appId: "1:793271454131:web:f0224ce0646a2beaf363c6"
+};
+
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+let unsubMatches = null;
+let unsubChat = null;
+let currentMatch = null;
+
+// AUTH
+function register() {
+  const emailVal = document.getElementById("email").value;
+  const passVal = document.getElementById("pass").value;
+
+  auth.createUserWithEmailAndPassword(emailVal, passVal)
+    .then(cred => {
+      return db.collection("users").doc(cred.user.uid).set({
+        email: cred.user.email,
+        partidos: 0,
+        ganados: 0,
+        perdidos: 0,
+        rating: 1000
+      });
+    })
+    .then(() => alert("Registrado correctamente"))
+    .catch(e => { console.error(e); alert(e.message); });
+}
+
+function login() {
+  const emailVal = document.getElementById("email").value;
+  const passVal = document.getElementById("pass").value;
+
+  auth.signInWithEmailAndPassword(emailVal, passVal)
+    .catch(e => { console.error(e); alert(e.message); });
+}
+
+function logout() {
+  auth.signOut();
+}
+
+auth.onAuthStateChanged(user => {
+  if (user) {
+    document.getElementById("authDiv").style.display = "none";
+    document.getElementById("appDiv").style.display = "block";
+    cargarPartidos();
+    cargarRanking();
+  } else {
+    document.getElementById("authDiv").style.display = "block";
+    document.getElementById("appDiv").style.display = "none";
+  }
+});
+
+// CREAR PARTIDO
+function crearPartido() {
+  db.collection("partidos").add({
+    zona: document.getElementById("zona").value,
+    fecha: document.getElementById("fecha").value,
+    hora: document.getElementById("hora").value,
+    jugadores: [auth.currentUser.uid],
+    teamA: [],
+    teamB: [],
+    votos: [],
+    resultadoFinal: null,
+    max: 10,
+    creador: auth.currentUser.uid
+  });
+}
+
+// LISTA PARTIDOS
+function cargarPartidos() {
+  if (unsubMatches) unsubMatches();
+
+  unsubMatches = db.collection("partidos").orderBy("fecha").onSnapshot(snap => {
+    document.getElementById("partidos").innerHTML = "";
+
+    snap.forEach(d => {
+      const p = d.data();
+      const id = d.id;
+
+      const estoy = p.jugadores.includes(auth.currentUser.uid);
+      const lleno = p.jugadores.length >= p.max;
+
+      document.getElementById("partidos").innerHTML += `
+      <div class="card">
+      <b>${p.zona}</b> ${p.fecha} ${p.hora}<br>
+      👥 ${p.jugadores.length}/${p.max}<br>
+      🅰 ${p.teamA.length} vs 🅱 ${p.teamB.length}<br>
+      ${p.resultadoFinal ? `🏁 ${p.resultadoFinal}` : ""}<br>
+
+      ${!estoy && !lleno ? `<button onclick="join('${id}')">Entrar</button>` : ""}
+      ${estoy ? `<button onclick="leave('${id}')">Salir</button>` : ""}
+      <button onclick="equipo('${id}','A')">Equipo A</button>
+      <button onclick="equipo('${id}','B')">Equipo B</button>
+      <button onclick="abrirChat('${id}')">Chat</button>
+      <button onclick="votar('${id}')">Votar</button>
+      <button onclick="resolver('${id}')">Resolver</button>
+      </div>`;
+    });
+  });
+}
+
+// JOIN
+function join(id) {
+  const ref = db.collection("partidos").doc(id);
+  ref.get().then(snap => {
+    const p = snap.data();
+    if (p.jugadores.length >= p.max) return;
+    if (p.jugadores.includes(auth.currentUser.uid)) return;
+    ref.update({ jugadores: firebase.firestore.FieldValue.arrayUnion(auth.currentUser.uid) });
+  });
+}
+
+function leave(id) {
+  db.collection("partidos").doc(id).update({
+    jugadores: firebase.firestore.FieldValue.arrayRemove(auth.currentUser.uid),
+    teamA: firebase.firestore.FieldValue.arrayRemove(auth.currentUser.uid),
+    teamB: firebase.firestore.FieldValue.arrayRemove(auth.currentUser.uid)
+  });
+}
+
+// EQUIPOS
+function equipo(id, t) {
+  const ref = db.collection("partidos").doc(id);
+  ref.update({
+    teamA: t === "A"
+      ? firebase.firestore.FieldValue.arrayUnion(auth.currentUser.uid)
+      : firebase.firestore.FieldValue.arrayRemove(auth.currentUser.uid),
+    teamB: t === "B"
+      ? firebase.firestore.FieldValue.arrayUnion(auth.currentUser.uid)
+      : firebase.firestore.FieldValue.arrayRemove(auth.currentUser.uid)
+  });
+}
+
+// CHAT
+function abrirChat(id) {
+  currentMatch = id;
+  document.getElementById("chatBox").style.display = "block";
+
+  if (unsubChat) unsubChat();
+
+  unsubChat = db.collection(`partidos/${id}/chat`).onSnapshot(snap => {
+    document.getElementById("mensajes").innerHTML = "";
+    snap.forEach(m => {
+      const d = m.data();
+      document.getElementById("mensajes").innerHTML += `<div>${d.user}: ${d.text}</div>`;
+    });
+  });
+}
+
+function sendMsg() {
+  db.collection(`partidos/${currentMatch}/chat`).add({
+    user: auth.currentUser.email,
+    text: document.getElementById("msg").value,
+    ts: Date.now()
+  });
+  document.getElementById("msg").value = "";
+}
+
+// VOTAR
+function votar(id) {
+  const r = prompt("Resultado A-B");
+  if (!r) return;
+
+  db.collection("partidos").doc(id).update({
+    votos: firebase.firestore.FieldValue.arrayUnion({ uid: auth.currentUser.uid, res: r })
+  });
+}
+
+// RESOLVER
+function resolver(id) {
+  const ref = db.collection("partidos").doc(id);
+  ref.get().then(snap => {
+    const p = snap.data();
+    const conteo = {};
+    p.votos.forEach(v => conteo[v.res] = (conteo[v.res] || 0) + 1);
+
+    let best = null, max = 0;
+    for (const r in conteo) {
+      if (conteo[r] > max) { max = conteo[r]; best = r; }
+    }
+
+    if (max <= p.jugadores.length / 2) return alert("Sin consenso");
+
+    ref.update({ resultadoFinal: best });
+
+    const [a, b] = best.split("-").map(Number);
+    const ganaA = a > b;
+
+    const updates = p.jugadores.map(uid => {
+      return db.collection("users").doc(uid).get().then(usnap => {
+        const u = usnap.data();
+        const esA = p.teamA.includes(uid);
+        const win = (esA && ganaA) || (!esA && !ganaA);
+        return db.collection("users").doc(uid).update({
+          partidos: u.partidos + 1,
+          ganados: u.ganados + (win ? 1 : 0),
+          perdidos: u.perdidos + (win ? 0 : 1),
+          rating: u.rating + (win ? 15 : -10)
+        });
+      });
+    });
+
+    Promise.all(updates).then(() => alert("Stats actualizadas"));
+  });
+}
+
+// RANKING
+function cargarRanking() {
+  db.collection("users").onSnapshot(snap => {
+    document.getElementById("ranking").innerHTML = "<h3>Ranking</h3>";
+    snap.forEach(u => {
+      const d = u.data();
+      document.getElementById("ranking").innerHTML += `${d.email} ⭐ ${d.rating}<br>`;
+    });
+  });
+}
+</script>
+
+</body>
+</html>
